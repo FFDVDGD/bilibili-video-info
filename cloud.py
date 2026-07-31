@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 import uuid
@@ -58,6 +59,8 @@ class OssAudioStore:
         _require_value(settings.bucket, "OSS bucket")
         _require_value(settings.access_key_id, "OSS AccessKey ID")
         _require_value(settings.access_key_secret, "OSS AccessKey Secret")
+        # OSS SDK 的 DEBUG 日志包含 Authorization 签名，不应写入 MaiBot 日志。
+        logging.getLogger("oss2").setLevel(logging.WARNING)
         self.settings = settings
         auth = oss2.Auth(settings.access_key_id, settings.access_key_secret)
         self._bucket = oss2.Bucket(auth, settings.endpoint, settings.bucket)
@@ -145,7 +148,7 @@ class FunAsrClient:
         try:
             response = await self.client.post(
                 f"{self.base_url}/services/audio/asr/transcription",
-                headers=self._headers(),
+                headers=self._headers(async_task=True),
                 json={
                     "model": "fun-asr",
                     "input": {"file_urls": [audio_url]},
@@ -190,12 +193,16 @@ class FunAsrClient:
                 raise CloudProcessingError(f"Fun-ASR 任务失败：{detail}")
         raise CloudProcessingError(f"Fun-ASR 转写超过 {self.settings.timeout_seconds} 秒")
 
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.settings.api_key}",
-            "Content-Type": "application/json",
-            "X-DashScope-Async": "enable",
-        }
+    def _headers(self, *, async_task: bool = False) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {self.settings.api_key}"}
+        if async_task:
+            headers.update(
+                {
+                    "Content-Type": "application/json",
+                    "X-DashScope-Async": "enable",
+                }
+            )
+        return headers
 
 
 def _extract_result_url(output: dict[str, Any]) -> str:

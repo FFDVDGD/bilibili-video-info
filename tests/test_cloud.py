@@ -63,7 +63,9 @@ async def test_fun_asr_transcription_flow_uses_stable_model_and_auto_language() 
         "input": {"file_urls": ["https://audio.example/file.mp3?signature=secret"]},
         "parameters": {"channel_id": [0]},
     }
+    assert requests[0].headers["x-dashscope-async"] == "enable"
     assert requests[1].headers["authorization"] == "Bearer sk-test"
+    assert "x-dashscope-async" not in requests[1].headers
     assert "authorization" not in requests[2].headers
 
 
