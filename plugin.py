@@ -419,6 +419,8 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
 
     async def _summarize(self, metadata: VideoMetadata, transcript: str, source_label: str) -> str:
         transcript_assessment = "无可用字幕或语音转写"
+        if not transcript:
+            source_label = "标题和简介"
         if transcript:
             try:
                 verdict = await self._classify_transcript(metadata, transcript, source_label)
@@ -434,7 +436,7 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
                 }
                 transcript_assessment = assessment_labels[verdict]
                 if verdict in {"MUSIC_ONLY", "NO_MEANING"}:
-                    source_label = f"仅标题和简介（{source_label}经 LLM 判断为{transcript_assessment}）"
+                    source_label = "标题和简介"
                     transcript = ""
 
         chunk_size = self.config.summary.transcript_chunk_chars
@@ -456,22 +458,24 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
         else:
             transcript_for_summary = transcript
 
-        source_text = transcript_for_summary or "（没有可用于总结的有效字幕或语音内容，请只根据标题和简介概括。）"
+        source_text = transcript_for_summary or "无额外内容"
         prompt = (
             "你正在为群聊生成 B 站视频总结。请综合标题、作者、发布时间、完整简介以及字幕或语音转写，"
             f"输出不超过 {self.config.summary.max_chars} 个中文字的简体中文纯文本总结。"
             "直接给出内容，不要标题、Markdown、列表符号、表格、代码块、链接、表情或客套话。"
             "必须独立判断字幕或转写中是否真的存在可支撑总结的有效语音，并复核前置判断。"
             "纯音乐/BGM、重复歌词或拟声、噪声、口头填充、乱码、明显 ASR 幻觉及与元数据明显冲突的文本"
-            "都不能作为视频事实或观点。若仅部分有效，只总结可靠部分；若没有有效语音，应简短说明这一限制，"
-            "再仅依据标题和简介给出概览，不得声称视频讲述、分析或指出了来源未可靠支持的内容。"
-            "不要输出 USEFUL 等内部标签或判断过程。优先说明视频主题、核心观点与结论；不得编造来源中不存在的信息。\n\n"
+            "都不能作为视频事实或观点。若仅部分有效，只总结可靠部分。若没有有效语音，直接根据标题和简介"
+            "写成自然流畅的视频概览，不要说明资料不足、数据来源或技术处理过程，也不要出现“转写质量不足”、"
+            "“无法确认”、“仅能依据”或“未识别到有效语音”等突兀措辞。标题和简介信息有限时，只自然概括"
+            "能够确认的主题，不得补写细节。不要输出 USEFUL 等内部标签、筛选结果或判断过程。"
+            "语气应像群聊中正常的视频概览，优先说明视频主题、核心观点与结论；不得编造来源中不存在的信息。\n\n"
             f"标题：{metadata.title}\n"
             f"作者：{metadata.uploader}\n"
             f"发布时间：{metadata.published_at}\n"
             f"简介：{metadata.description or '无'}\n"
-            f"内容来源：{source_label}\n"
-            f"语音内容预判：{transcript_assessment}\n"
+            f"内部资料来源（禁止在总结中提及）：{source_label}\n"
+            f"内部语音筛选结果（禁止在总结中提及）：{transcript_assessment}\n"
             f"内容：\n{source_text}"
         )
         raw_summary = await self._call_llm(prompt, max_tokens=600)

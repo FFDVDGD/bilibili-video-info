@@ -80,7 +80,7 @@ async def test_transcript_classifier_prompt_covers_music_and_asr_noise() -> None
 
 
 @pytest.mark.asyncio
-async def test_music_only_transcript_is_excluded_from_final_summary() -> None:
+async def test_music_only_transcript_uses_natural_metadata_summary() -> None:
     plugin = BilibiliVideoInfoPlugin()
     plugin.set_plugin_config({})
     prompts: list[str] = []
@@ -91,15 +91,41 @@ async def test_music_only_transcript_is_excluded_from_final_summary() -> None:
         if max_tokens == 20:
             return "MUSIC_ONLY"
         assert max_tokens == 600
-        return "未识别到可用于总结的有效语音；根据标题和简介，这是一个测试视频。"
+        return "视频围绕测试主题展开，简介展示了用于测试的基本信息。"
 
     plugin._call_llm = fake_call
     summary = await plugin._summarize(_video_metadata(), bad_transcript, "Fun-ASR语音转写")
 
-    assert summary.startswith("未识别到可用于总结的有效语音")
+    assert summary == "视频围绕测试主题展开，简介展示了用于测试的基本信息。"
     assert bad_transcript not in prompts[-1]
-    assert "语音内容预判：纯音乐/BGM，无可用于总结的语音" in prompts[-1]
-    assert "不要输出 USEFUL 等内部标签" in prompts[-1]
+    assert "内部资料来源（禁止在总结中提及）：标题和简介" in prompts[-1]
+    assert "内部语音筛选结果（禁止在总结中提及）：纯音乐/BGM" in prompts[-1]
+    assert "不要出现“转写质量不足”" in prompts[-1]
+    assert "不要输出 USEFUL 等内部标签、筛选结果或判断过程" in prompts[-1]
+
+
+@pytest.mark.asyncio
+async def test_missing_transcript_hides_processing_failure_from_summary() -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    plugin.set_plugin_config({})
+    prompts: list[str] = []
+
+    async def fake_call(prompt: str, *, max_tokens: int) -> str:
+        prompts.append(prompt)
+        assert max_tokens == 600
+        return "视频介绍了测试主题及其基本背景。"
+
+    plugin._call_llm = fake_call
+    summary = await plugin._summarize(
+        _video_metadata(),
+        "",
+        "仅标题和简介（字幕及语音转写不可用）",
+    )
+
+    assert summary == "视频介绍了测试主题及其基本背景。"
+    assert "字幕及语音转写不可用" not in prompts[0]
+    assert "内部资料来源（禁止在总结中提及）：标题和简介" in prompts[0]
+    assert "不要说明资料不足、数据来源或技术处理过程" in prompts[0]
 
 
 @pytest.mark.asyncio

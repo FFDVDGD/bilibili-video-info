@@ -9,7 +9,7 @@ MaiBot SDK 2.x 插件。它会在所有被 MaiBot 适配器策略放行的群聊
 3. 元数据一取得就发送“封面 + 文本”，随后发送“AI总结中”。不会额外发送“视频解析中”。
 4. 优先使用中文人工字幕、中文自动字幕、其他语言人工字幕、其他语言自动字幕。
 5. 没有可用字幕时下载 MP3，上传到私有 OSS，并通过异步 `fun-asr` 转写。
-6. 使用 MaiBot 主程序公开的 `utils` LLM 任务判断字幕/转写是有效内容、部分有效、纯音乐/BGM，还是无意义的识别结果。无有效语音时丢弃转写，只依据标题和简介概览；部分有效时只采用可靠内容。
+6. 使用 MaiBot 主程序公开的 `utils` LLM 任务判断字幕/转写是有效内容、部分有效、纯音乐/BGM，还是无意义的识别结果。无有效语音时丢弃转写，以自然措辞概览标题和简介，不在总结中回显 ASR、资料不足等内部处理过程；部分有效时只采用可靠内容。
 7. LLM 在最终生成总结时再次复核内容有效性，并输出简体中文纯文本总结。
 8. ASR 完成后删除 OSS 对象；本地 Cookie、音频和其他临时文件也会立即删除。
 
@@ -17,12 +17,18 @@ MaiBot SDK 2.x 插件。它会在所有被 MaiBot 适配器策略放行的群聊
 
 ## 安装
 
-将本目录放入 MaiBot 的第三方插件目录，并把对应系统的预编译文件放到 `bin/`：
+将本目录放入 MaiBot 的第三方插件目录，然后下载与操作系统及 CPU 架构匹配的预编译文件：
+
+- yt-dlp：[官方 Releases 最新版](https://github.com/yt-dlp/yt-dlp/releases/latest)；Windows 通常下载 `yt-dlp.exe`。
+- FFmpeg：[官方下载页](https://ffmpeg.org/download.html)；FFmpeg 官网会按系统列出源码和可信的预编译构建提供方。
+
+请只从上述官方页面或 FFmpeg 官方列出的构建提供方下载。解压后，将可执行文件放入插件目录的 `bin/`：
 
 ```text
-bin/
-├── ffmpeg.exe    # Windows
-└── yt-dlp.exe
+bilibili-video-info/
+└── bin/
+    ├── ffmpeg.exe    # Windows
+    └── yt-dlp.exe
 ```
 
 Linux/macOS 使用无扩展名的 `bin/ffmpeg` 与 `bin/yt-dlp`，并自行添加可执行权限：
@@ -31,7 +37,21 @@ Linux/macOS 使用无扩展名的 `bin/ffmpeg` 与 `bin/yt-dlp`，并自行添�
 chmod +x bin/ffmpeg bin/yt-dlp
 ```
 
-插件不会下载或更新这些二进制，也不会在非 Windows 系统上尝试执行 `.exe` 文件。
+插件只检查并使用 `ffmpeg` 和 `yt-dlp`；FFmpeg 压缩包中附带的 `ffprobe` 不是本插件的必需文件。插件不会下载或更新这些二进制，也不会在非 Windows 系统上尝试执行 `.exe` 文件。`bin/` 已加入 `.gitignore`，请勿将二进制提交到 Git。
+
+放置后可先确认二进制能够正常运行。Windows PowerShell：
+
+```powershell
+.\bin\yt-dlp.exe --version
+.\bin\ffmpeg.exe -version
+```
+
+Linux/macOS：
+
+```bash
+./bin/yt-dlp --version
+./bin/ffmpeg -version
+```
 
 Python 依赖已在 Manifest v2 中声明，MaiBot Host 会安装 `httpx` 和 `oss2`。独立先期验证可使用：
 
@@ -54,6 +74,15 @@ Windows PowerShell：
 ```powershell
 Copy-Item config.example.toml config.toml
 ```
+
+### 插件版本与配置版本
+
+插件发行版本与配置结构版本相互独立：
+
+- `_manifest.json` 和 `pyproject.toml` 中的版本表示插件代码发行版本。
+- `[plugin].config_version` 表示 `config.toml` 的结构版本，用于配置兼容与迁移。
+
+功能改进、Bug 修复和提示词调整通常只提升插件发行版本。只有新增、删除或重命名配置字段，或者修改字段类型、含义或 TOML 分区时，才提升 `config_version`。因此插件 v0.1.3 继续使用 `config_version = "0.1.0"` 是预期行为，现有配置无需迁移。
 
 ### Bilibili Cookie
 
