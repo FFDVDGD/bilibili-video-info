@@ -1,0 +1,30 @@
+[plugin]
+enabled = true
+config_version = "0.1.0"
+max_video_duration_seconds = 3600
+global_concurrency = 2
+per_group_concurrency = 1
+dedupe_ttl_seconds = 600
+metadata_description_max_chars = 200
+
+[bilibili]
+# 直接粘贴浏览器复制出的单行 Cookie 请求头；匿名访问时留空。
+cookie = ""
+
+[aliyun]
+region = "cn-beijing"
+workspace_id = ""
+api_key = ""
+oss_endpoint = "https://oss-cn-beijing.aliyuncs.com"
+oss_bucket = ""
+oss_access_key_id = ""
+oss_access_key_secret = ""
+oss_object_prefix = "maibot-bilibili-video-info"
+signed_url_ttl_seconds = 7200
+asr_timeout_seconds = 1800
+asr_poll_interval_seconds = 3
+
+[summary]
+llm_task_name = "utils"
+max_chars = 300
+transcript_chunk_chars = 12000
