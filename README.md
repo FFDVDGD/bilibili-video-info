@@ -83,7 +83,7 @@ asr_timeout_seconds = 1800
 asr_poll_interval_seconds = 3
 ```
 
-插件使用稳定模型名 `fun-asr`，通过 `POST /services/audio/asr/transcription` 提交异步任务并轮询结果。OSS 身份至少需要目标前缀的 `PutObject`、`GetObject` 和 `DeleteObject` 权限。
+插件使用稳定模型名 `fun-asr`，通过 `POST /services/audio/asr/transcription` 提交异步任务并轮询结果。提交私有 OSS 签名 URL 时会启用百炼的 OSS 资源解析，并保留对象路径中的斜杠以提高下载兼容性。OSS 身份至少需要目标前缀的 `PutObject`、`GetObject` 和 `DeleteObject` 权限。
 
 请额外为 `oss_object_prefix` 配置短期生命周期规则（建议 1 天后自动删除），用于清理进程崩溃或持续网络故障下无法主动删除的极少数残留对象。
 
@@ -113,6 +113,7 @@ asr_poll_interval_seconds = 3
 
 - 字幕读取失败：改用音频与 Fun-ASR。
 - 音频下载、OSS 或 ASR 失败：明确提示，并仅根据标题和简介生成概览。
+- Fun-ASR 返回内部服务错误：自动重新提交一次；最终失败日志会包含脱敏后的子任务错误码、Task ID 和 Request ID，方便进一步排查。
 - 字幕或 ASR 结果被 LLM 判定为纯音乐/BGM 或无意义内容：不采用该文本，只根据标题和简介生成带信息边界的简短概览。
 - LLM 或元数据解析失败：发送简化错误，不回显 Cookie、API Key、签名 URL 等敏感信息。
 - 会员、付费、充电、地区限制或已删除视频能否处理取决于 Cookie 对应账号权限和 yt-dlp 支持情况。

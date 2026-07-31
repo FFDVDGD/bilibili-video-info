@@ -20,6 +20,8 @@ _REGION_SUFFIXES = {
     "cn-beijing": "cn-beijing.maas.aliyuncs.com",
     "ap-southeast-1": "ap-southeast-1.maas.aliyuncs.com",
 }
+_ASR_MAX_ATTEMPTS = 2
+_ASR_RETRY_DELAY_SECONDS = 2
 
 
 class CloudProcessingError(RuntimeError):
@@ -86,6 +88,7 @@ class OssAudioStore:
                 "GET",
                 object_key,
                 self.settings.signed_url_ttl_seconds,
+                slash_safe=True,
             )
         except asyncio.CancelledError:
             if uploaded:
@@ -128,8 +131,17 @@ class FunAsrClient:
         self.base_url = f"https://{settings.workspace_id}.{suffix}/api/v1"
 
     async def transcribe(self, audio_url: str) -> str:
-        task_id = await self._submit(audio_url)
-        result_url = await self._wait_for_result(task_id)
+        result_url = ""
+        for attempt in range(_ASR_MAX_ATTEMPTS):
+            task_id = await self._submit(audio_url)
+            try:
+                result_url = await self._wait_for_result(task_id)
+                break
+            except CloudProcessingError as exc:
+                if attempt + 1 >= _ASR_MAX_ATTEMPTS or not _is_retryable_asr_error(str(exc)):
+                    raise
+                await asyncio.sleep(_ASR_RETRY_DELAY_SECONDS * (attempt + 1))
+
         try:
             response = await self.client.get(result_url, timeout=30, follow_redirects=True)
         except httpx.RequestError as exc:
@@ -189,8 +201,12 @@ class FunAsrClient:
             if status == "SUCCEEDED":
                 return _extract_result_url(output)
             if status in {"FAILED", "CANCELED", "UNKNOWN"}:
-                detail = _safe_cloud_detail(str(output.get("message") or output.get("code") or status))
-                raise CloudProcessingError(f"Fun-ASR 任务失败：{detail}")
+                detail = _extract_task_failure_detail(output, status)
+                request_id = str(payload.get("request_id") or "") if isinstance(payload, dict) else ""
+                identifiers = f"task_id={task_id}"
+                if request_id:
+                    identifiers += f", request_id={request_id}"
+                raise CloudProcessingError(f"Fun-ASR 任务失败：{detail}（{identifiers}）")
         raise CloudProcessingError(f"Fun-ASR 转写超过 {self.settings.timeout_seconds} 秒")
 
     def _headers(self, *, async_task: bool = False) -> dict[str, str]:
@@ -200,9 +216,38 @@ class FunAsrClient:
                 {
                     "Content-Type": "application/json",
                     "X-DashScope-Async": "enable",
+                    "X-DashScope-OssResourceResolve": "enable",
                 }
             )
         return headers
+
+
+def _extract_task_failure_detail(output: dict[str, Any], fallback: str) -> str:
+    results = output.get("results")
+    if isinstance(results, list):
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            code = str(result.get("code") or "").strip()
+            message = str(result.get("message") or "").strip()
+            if code or message:
+                combined = code if not message or message == code else f"{code}: {message}" if code else message
+                return _safe_cloud_detail(combined)
+    return _safe_cloud_detail(str(output.get("message") or output.get("code") or fallback))
+
+
+def _is_retryable_asr_error(detail: str) -> bool:
+    normalized = detail.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "internal server error",
+            "internalerror",
+            "internal error",
+            "inference internal error",
+            "algorithm process error",
+        )
+    )
 
 
 def _extract_result_url(output: dict[str, Any]) -> str:
