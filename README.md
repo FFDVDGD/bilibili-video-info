@@ -4,7 +4,7 @@ MaiBot SDK 2.x 插件。它会在所有被 MaiBot 适配器策略放行的群聊
 
 ## 工作流程
 
-1. 识别普通 BV/AV 链接、移动端链接、`b23.tv` / `bili2233.cn` 短链、App 分享文本和番剧 `ep` 链接。
+1. 识别普通 BV/AV 链接、移动端链接、`b23.tv` / `bili2233.cn` 短链、QQ 小程序卡片、App 分享文本和番剧 `ep` 链接。
 2. 使用插件 `bin/` 目录中的 yt-dlp 读取标题、简介、作者、发布时间、时长、封面和字幕。
 3. 元数据一取得就发送“封面 + 文本”，随后发送“AI总结中”。不会额外发送“视频解析中”。
 4. 优先使用中文人工字幕、中文自动字幕、其他语言人工字幕、其他语言自动字幕。
@@ -82,7 +82,7 @@ Copy-Item config.example.toml config.toml
 - `_manifest.json` 和 `pyproject.toml` 中的版本表示插件代码发行版本。
 - `[plugin].config_version` 表示 `config.toml` 的结构版本，用于配置兼容与迁移。
 
-功能改进、Bug 修复和提示词调整通常只提升插件发行版本。只有新增、删除或重命名配置字段，或者修改字段类型、含义或 TOML 分区时，才提升 `config_version`。因此插件 v0.1.3 继续使用 `config_version = "0.1.0"` 是预期行为，现有配置无需迁移。
+功能改进、Bug 修复和提示词调整通常只提升插件发行版本。只有新增、删除或重命名配置字段，或者修改字段类型、含义或 TOML 分区时，才提升 `config_version`。因此插件 v0.1.4 继续使用 `config_version = "0.1.0"` 是预期行为，现有配置无需迁移。
 
 ### Bilibili Cookie
 

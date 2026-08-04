@@ -182,6 +182,45 @@ def test_build_job_accepts_any_group_and_preserves_message_id() -> None:
     assert job.account_id == "bot-1"
 
 
+def test_build_job_extracts_url_from_bilibili_miniapp_card() -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    job = plugin._build_job(
+        {
+            "platform": "qq",
+            "session_id": "stream-1",
+            "message_id": "message-1",
+            "processed_plain_text": "[小程序] 哔哩哔哩：测试视频",
+            "message_info": {
+                "group_info": {"group_id": "123"},
+                "user_info": {"user_nickname": "测试用户"},
+                "additional_config": {
+                    "self_id": "bot-1",
+                    "platform_card_payloads": [
+                        {
+                            "type": "miniapp_card",
+                            "app": "com.tencent.miniapp_01",
+                            "payload": {
+                                "app": "com.tencent.miniapp_01",
+                                "meta": {
+                                    "detail_1": {
+                                        "title": "哔哩哔哩",
+                                        "desc": "测试视频",
+                                        "qqdocurl": "https://b23.tv/AbCdEf",
+                                    }
+                                },
+                            },
+                        }
+                    ],
+                },
+            },
+        }
+    )
+
+    assert job is not None
+    assert job.url == "https://b23.tv/AbCdEf"
+    assert job.text == "[小程序] 哔哩哔哩：测试视频"
+
+
 def test_build_job_ignores_private_chat() -> None:
     plugin = BilibiliVideoInfoPlugin()
     job = plugin._build_job(

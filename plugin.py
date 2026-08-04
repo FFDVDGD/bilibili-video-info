@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import time
@@ -11,6 +12,7 @@ from base64 import b64encode
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote
 
 import httpx
 from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, HookHandler, MaiBotPlugin, PluginConfigBase
@@ -220,7 +222,9 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
         group_id = str(group_info.get("group_id") or "").strip()
         platform = str(message.get("platform") or "").strip()
         text = str(message.get("processed_plain_text") or "")
-        url = extract_bilibili_url(text)
+        additional_config = message_info.get("additional_config")
+        route_metadata = additional_config if isinstance(additional_config, dict) else {}
+        url = extract_bilibili_url(text) or _extract_platform_card_url(route_metadata)
         if not group_id or not platform or url is None:
             return None
 
@@ -228,8 +232,6 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
         user_nickname = "群成员"
         if isinstance(user_info, dict):
             user_nickname = str(user_info.get("user_nickname") or user_info.get("user_cardname") or user_nickname)
-        additional_config = message_info.get("additional_config")
-        route_metadata = additional_config if isinstance(additional_config, dict) else {}
         return InboundVideoJob(
             url=url,
             text=text,
@@ -592,6 +594,25 @@ def _first_route_value(metadata: dict[str, Any], keys: tuple[str, ...]) -> str:
         if value:
             return value
     return ""
+
+
+def _extract_platform_card_url(metadata: dict[str, Any]) -> str | None:
+    """从适配器保留的小程序卡片载荷中提取 Bilibili 视频链接。"""
+
+    card_payloads = metadata.get("platform_card_payloads")
+    if not isinstance(card_payloads, list):
+        return None
+    for card in card_payloads:
+        if not isinstance(card, dict) or card.get("type") != "miniapp_card":
+            continue
+        payload = card.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        serialized_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        url = extract_bilibili_url(serialized_payload) or extract_bilibili_url(unquote(serialized_payload))
+        if url is not None:
+            return url
+    return None
 
 
 def _sample_transcript(transcript: str, max_chars: int = 6000) -> str:
