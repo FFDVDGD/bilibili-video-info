@@ -182,6 +182,64 @@ def test_build_job_accepts_any_group_and_preserves_message_id() -> None:
     assert job.account_id == "bot-1"
 
 
+def test_build_job_ignores_url_from_quoted_message() -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    job = plugin._build_job(
+        {
+            "platform": "qq",
+            "session_id": "stream-1",
+            "message_id": "message-1",
+            "processed_plain_text": "https://b23.tv/QuotedVideo 这个视频说得对吗？",
+            "raw_message": [
+                {
+                    "type": "reply",
+                    "data": {
+                        "target_message_id": "quoted-message",
+                        "target_message_content": "https://b23.tv/QuotedVideo",
+                    },
+                },
+                {"type": "text", "data": "这个视频说得对吗？"},
+            ],
+            "message_info": {
+                "group_info": {"group_id": "123"},
+                "user_info": {"user_nickname": "测试用户"},
+            },
+        }
+    )
+
+    assert job is None
+
+
+def test_build_job_accepts_url_from_reply_body() -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    job = plugin._build_job(
+        {
+            "platform": "qq",
+            "session_id": "stream-1",
+            "message_id": "message-1",
+            "processed_plain_text": "https://b23.tv/QuotedVideo 看这个 https://b23.tv/CurrentVideo",
+            "raw_message": [
+                {
+                    "type": "reply",
+                    "data": {
+                        "target_message_id": "quoted-message",
+                        "target_message_content": "https://b23.tv/QuotedVideo",
+                    },
+                },
+                {"type": "text", "data": "看这个 https://b23.tv/CurrentVideo"},
+            ],
+            "message_info": {
+                "group_info": {"group_id": "123"},
+                "user_info": {"user_nickname": "测试用户"},
+            },
+        }
+    )
+
+    assert job is not None
+    assert job.url == "https://b23.tv/CurrentVideo"
+    assert job.text == "看这个 https://b23.tv/CurrentVideo"
+
+
 def test_build_job_extracts_url_from_bilibili_miniapp_card() -> None:
     plugin = BilibiliVideoInfoPlugin()
     job = plugin._build_job(

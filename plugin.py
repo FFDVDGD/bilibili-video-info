@@ -222,6 +222,17 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
         group_id = str(group_info.get("group_id") or "").strip()
         platform = str(message.get("platform") or "").strip()
         text = str(message.get("processed_plain_text") or "")
+        raw_message = message.get("raw_message")
+        if isinstance(raw_message, list) and any(
+            isinstance(segment, dict) and segment.get("type") == "reply" for segment in raw_message
+        ):
+            # 宿主会把引用内容拼入 processed_plain_text；回复消息只检查发送者自己的文本段。
+            text = " ".join(
+                data
+                for segment in raw_message
+                if isinstance(segment, dict) and segment.get("type") == "text"
+                if isinstance(data := segment.get("data"), str)
+            ).strip()
         additional_config = message_info.get("additional_config")
         route_metadata = additional_config if isinstance(additional_config, dict) else {}
         url = extract_bilibili_url(text) or _extract_platform_card_url(route_metadata)
