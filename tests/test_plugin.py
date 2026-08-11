@@ -1,6 +1,8 @@
+import logging
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +18,7 @@ sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 
 BilibiliVideoInfoPlugin = _MODULE.BilibiliVideoInfoPlugin
+InboundVideoJob = _MODULE.InboundVideoJob
 VideoMetadata = _MODULE.VideoMetadata
 _sample_transcript = _MODULE._sample_transcript
 _sanitize_summary = _MODULE._sanitize_summary
@@ -33,6 +36,20 @@ def _video_metadata() -> VideoMetadata:
         duration_seconds=120,
         thumbnail_url="https://image.example/cover.jpg",
         subtitle_track=None,
+    )
+
+
+def _video_job() -> InboundVideoJob:
+    return InboundVideoJob(
+        url="https://www.bilibili.com/video/BV1test",
+        text="看看这个视频",
+        platform="qq",
+        group_id="123",
+        user_nickname="测试用户",
+        stream_id="stream-1",
+        message_id="message-1",
+        account_id="bot-1",
+        scope="",
     )
 
 
@@ -80,40 +97,34 @@ async def test_transcript_classifier_prompt_covers_music_and_asr_noise() -> None
 
 
 @pytest.mark.asyncio
-async def test_music_only_transcript_uses_natural_metadata_summary() -> None:
+@pytest.mark.parametrize("verdict", ["MUSIC_ONLY", "NO_MEANING"])
+async def test_invalid_transcript_skips_final_summary(verdict: str) -> None:
     plugin = BilibiliVideoInfoPlugin()
     plugin.set_plugin_config({})
-    prompts: list[str] = []
-    bad_transcript = "不要用于最终总结的音乐幻觉文本"
+    calls: list[int] = []
 
     async def fake_call(prompt: str, *, max_tokens: int) -> str:
-        prompts.append(prompt)
+        del prompt
+        calls.append(max_tokens)
         if max_tokens == 20:
-            return "MUSIC_ONLY"
-        assert max_tokens == 600
-        return "视频围绕测试主题展开，简介展示了用于测试的基本信息。"
+            return verdict
+        pytest.fail("无效字幕不应调用最终总结模型")
 
     plugin._call_llm = fake_call
-    summary = await plugin._summarize(_video_metadata(), bad_transcript, "Fun-ASR语音转写")
+    summary = await plugin._summarize(_video_metadata(), "无效字幕文本", "Fun-ASR语音转写")
 
-    assert summary == "视频围绕测试主题展开，简介展示了用于测试的基本信息。"
-    assert bad_transcript not in prompts[-1]
-    assert "内部资料来源（禁止在总结中提及）：标题和简介" in prompts[-1]
-    assert "内部语音筛选结果（禁止在总结中提及）：纯音乐/BGM" in prompts[-1]
-    assert "不要出现“转写质量不足”" in prompts[-1]
-    assert "不要输出 USEFUL 等内部标签、筛选结果或判断过程" in prompts[-1]
+    assert summary is None
+    assert calls == [20]
 
 
 @pytest.mark.asyncio
-async def test_missing_transcript_hides_processing_failure_from_summary() -> None:
+async def test_missing_transcript_skips_all_llm_calls() -> None:
     plugin = BilibiliVideoInfoPlugin()
     plugin.set_plugin_config({})
-    prompts: list[str] = []
 
     async def fake_call(prompt: str, *, max_tokens: int) -> str:
-        prompts.append(prompt)
-        assert max_tokens == 600
-        return "视频介绍了测试主题及其基本背景。"
+        del prompt, max_tokens
+        pytest.fail("没有字幕或转写时不应调用 LLM")
 
     plugin._call_llm = fake_call
     summary = await plugin._summarize(
@@ -122,10 +133,26 @@ async def test_missing_transcript_hides_processing_failure_from_summary() -> Non
         "仅标题和简介（字幕及语音转写不可用）",
     )
 
-    assert summary == "视频介绍了测试主题及其基本背景。"
-    assert "字幕及语音转写不可用" not in prompts[0]
-    assert "内部资料来源（禁止在总结中提及）：标题和简介" in prompts[0]
-    assert "不要说明资料不足、数据来源或技术处理过程" in prompts[0]
+    assert summary is None
+
+
+@pytest.mark.asyncio
+async def test_classifier_failure_skips_final_summary() -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    plugin.set_plugin_config({})
+    plugin._set_context(SimpleNamespace(logger=logging.getLogger("test-classifier-failure")))
+    calls: list[int] = []
+
+    async def fake_call(prompt: str, *, max_tokens: int) -> str:
+        del prompt
+        calls.append(max_tokens)
+        raise RuntimeError("classifier unavailable")
+
+    plugin._call_llm = fake_call
+    summary = await plugin._summarize(_video_metadata(), "待判断的字幕", "中文字幕")
+
+    assert summary is None
+    assert calls == [20]
 
 
 @pytest.mark.asyncio
@@ -157,7 +184,125 @@ async def test_long_useful_transcript_keeps_chunk_validity_for_final_review() ->
     assert len(chunk_prompts) > 1
     assert all("片段有效性：有效/部分有效/无效" in prompt for prompt in chunk_prompts)
     assert "片段有效性：有效" in final_prompt
-    assert "必须独立判断字幕或转写中是否真的存在" in final_prompt
+    assert "前置判断已确认字幕或转写中至少存在部分有效内容" in final_prompt
+    assert "不能代替字幕或转写生成概览" in final_prompt
+
+
+@pytest.mark.asyncio
+async def test_summary_status_is_sent_and_retracted_through_napcat_api() -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeApi:
+        async def call(self, api_name: str, **kwargs: object) -> dict[str, object]:
+            calls.append((api_name, kwargs))
+            if api_name == "adapter.napcat.group.send_group_msg":
+                return {"status": "ok", "data": {"message_id": 456}}
+            return {"status": "ok", "retcode": 0, "data": {}}
+
+    plugin._set_context(
+        SimpleNamespace(
+            api=FakeApi(),
+            logger=logging.getLogger("test-summary-status"),
+        )
+    )
+
+    message_id = await plugin._send_summary_status(_video_job())
+    await plugin._retract_summary_status(message_id)
+
+    assert message_id == "456"
+    assert calls == [
+        (
+            "adapter.napcat.group.send_group_msg",
+            {
+                "version": "1",
+                "params": {
+                    "group_id": 123,
+                    "message": [{"type": "text", "data": {"text": "AI总结中"}}],
+                },
+            },
+        ),
+        (
+            "adapter.napcat.message.delete_msg",
+            {"version": "1", "message_id": "456"},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transcript", "summary_result", "expected_text", "expected_summary_calls"),
+    [
+        ("", None, "未能获取有效字幕或语音转写，已跳过 AI 总结。", 0),
+        ("无效字幕", None, "字幕或语音转写中没有可用于总结的有效内容，已跳过 AI 总结。", 1),
+        ("有效字幕", "最终总结", "最终总结", 1),
+    ],
+)
+async def test_workflow_retracts_status_after_summary_result(
+    tmp_path: Path,
+    transcript: str,
+    summary_result: str | None,
+    expected_text: str,
+    expected_summary_calls: int,
+) -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    plugin.set_plugin_config({})
+    plugin._http_client = object()
+    events: list[tuple[str, str]] = []
+    summary_calls = 0
+
+    class FakeYtDlp:
+        async def probe(self, url: str, work_dir: Path, cookie_file: Path | None) -> VideoMetadata:
+            del url, work_dir, cookie_file
+            return _video_metadata()
+
+    async def fake_send_metadata(metadata: VideoMetadata, stream_id: str) -> None:
+        del metadata, stream_id
+
+    async def fake_send_status(job: InboundVideoJob) -> str:
+        del job
+        events.append(("status", "456"))
+        return "456"
+
+    async def fake_obtain_transcript(
+        metadata: VideoMetadata,
+        work_dir: Path,
+        cookie_file: Path | None,
+    ) -> tuple[str, str]:
+        del metadata, work_dir, cookie_file
+        return transcript, "中文字幕"
+
+    async def fake_summarize(metadata: VideoMetadata, text: str, source_label: str) -> str | None:
+        nonlocal summary_calls
+        del metadata, text, source_label
+        summary_calls += 1
+        return summary_result
+
+    async def fake_send_text(text: str, stream_id: str) -> None:
+        del stream_id
+        events.append(("result", text))
+
+    async def fake_retract(message_id: str | None) -> None:
+        events.append(("retract", str(message_id)))
+
+    plugin._yt_dlp = FakeYtDlp()
+    plugin._send_metadata = fake_send_metadata
+    plugin._send_summary_status = fake_send_status
+    plugin._obtain_transcript = fake_obtain_transcript
+    plugin._summarize = fake_summarize
+    plugin._send_context_text = fake_send_text
+    plugin._retract_summary_status = fake_retract
+    plugin._set_context(
+        SimpleNamespace(
+            paths=SimpleNamespace(runtime_dir=tmp_path),
+            logger=logging.getLogger("test-summary-workflow"),
+        )
+    )
+
+    await plugin._run_video_workflow(_video_job(), "stream-1")
+
+    assert summary_calls == expected_summary_calls
+    assert events[-2:] == [("result", expected_text), ("retract", "456")]
 
 
 def test_build_job_accepts_any_group_and_preserves_message_id() -> None:

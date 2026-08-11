@@ -303,12 +303,22 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
                 await self._send_context_text(f"视频超过 {limit_minutes} 分钟，已跳过 AI 总结。", stream_id)
                 return
 
-            await self._send_context_text("AI总结中", stream_id)
-            transcript, source_label = await self._obtain_transcript(metadata, work_dir, cookie_file)
-            if not transcript:
-                await self._send_context_text("未能获取字幕或语音转写，将仅根据标题和简介生成概览。", stream_id)
-            summary = await self._summarize(metadata, transcript, source_label)
-            await self._send_context_text(summary, stream_id)
+            status_message_id = await self._send_summary_status(job)
+            try:
+                transcript, source_label = await self._obtain_transcript(metadata, work_dir, cookie_file)
+                if not transcript:
+                    await self._send_context_text("未能获取有效字幕或语音转写，已跳过 AI 总结。", stream_id)
+                    return
+                summary = await self._summarize(metadata, transcript, source_label)
+                if summary is None:
+                    await self._send_context_text(
+                        "字幕或语音转写中没有可用于总结的有效内容，已跳过 AI 总结。",
+                        stream_id,
+                    )
+                    return
+                await self._send_context_text(summary, stream_id)
+            finally:
+                await self._retract_summary_status(status_message_id)
         finally:
             await asyncio.to_thread(shutil.rmtree, work_dir, True)
 
@@ -339,8 +349,8 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
             transcript = await self._transcribe_audio(audio_path)
             return transcript, "Fun-ASR语音转写"
         except Exception as exc:
-            self.ctx.logger.error("Bilibili 音频转写失败，将仅根据元数据总结: %s", exc, exc_info=True)
-            return "", "仅标题和简介（字幕及语音转写不可用）"
+            self.ctx.logger.error("Bilibili 音频转写失败，将跳过 AI 总结: %s", exc, exc_info=True)
+            return "", "字幕及语音转写不可用"
 
     async def _transcribe_audio(self, audio_path: Path) -> str:
         if self._http_client is None:
@@ -402,6 +412,50 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
             return
         await self._send_context_text(text, stream_id)
 
+    async def _send_summary_status(self, job: InboundVideoJob) -> str | None:
+        """通过 NapCat 直发临时状态，并返回用于撤回的平台消息 ID。"""
+
+        if job.platform.lower() != "qq":
+            self.ctx.logger.warning("当前平台不支持可撤回的 AI 总结状态，已跳过状态消息: %s", job.platform)
+            return None
+        try:
+            response = await self.ctx.api.call(
+                "adapter.napcat.group.send_group_msg",
+                version="1",
+                params={
+                    "group_id": int(job.group_id),
+                    "message": [{"type": "text", "data": {"text": "AI总结中"}}],
+                },
+            )
+        except Exception as exc:
+            self.ctx.logger.warning("NapCat 直发 AI 总结状态失败，将继续处理视频: %s", exc)
+            return None
+
+        data = response.get("data") if isinstance(response, dict) else None
+        message_id = str(data.get("message_id") or "").strip() if isinstance(data, dict) else ""
+        status = str(response.get("status") or "").lower() if isinstance(response, dict) else ""
+        if status != "ok" or not message_id:
+            self.ctx.logger.warning("NapCat 未返回可撤回的 AI 总结状态消息 ID，将继续处理视频")
+            return None
+        return message_id
+
+    async def _retract_summary_status(self, message_id: str | None) -> None:
+        """撤回通过 NapCat 直发的临时 AI 总结状态。"""
+
+        if not message_id:
+            return
+        try:
+            response = await self.ctx.api.call(
+                "adapter.napcat.message.delete_msg",
+                version="1",
+                message_id=message_id,
+            )
+        except Exception as exc:
+            self.ctx.logger.warning("NapCat 撤回 AI 总结状态失败: %s", exc)
+            return
+        if not isinstance(response, dict) or str(response.get("status") or "").lower() != "ok":
+            self.ctx.logger.warning("NapCat 撤回 AI 总结状态未返回成功结果")
+
     async def _classify_transcript(
         self,
         metadata: VideoMetadata,
@@ -430,30 +484,25 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
             raise RuntimeError(f"LLM 返回了无法识别的内容有效性标签：{verdict[:40]}")
         return verdict  # type: ignore[return-value]
 
-    async def _summarize(self, metadata: VideoMetadata, transcript: str, source_label: str) -> str:
-        transcript_assessment = "无可用字幕或语音转写"
+    async def _summarize(self, metadata: VideoMetadata, transcript: str, source_label: str) -> str | None:
         if not transcript:
-            source_label = "标题和简介"
-        if transcript:
-            try:
-                verdict = await self._classify_transcript(metadata, transcript, source_label)
-            except Exception as exc:
-                self.ctx.logger.warning("字幕/语音内容有效性判断失败，将由最终总结再次判断: %s", exc)
-                transcript_assessment = "预判失败，最终总结必须自行复核文本是否包含有效语音"
-            else:
-                assessment_labels = {
-                    "USEFUL": "有效",
-                    "PARTIAL": "部分有效，必须忽略音乐、重复、噪声和识别错误",
-                    "MUSIC_ONLY": "纯音乐/BGM，无可用于总结的语音",
-                    "NO_MEANING": "无意义或转写质量不足",
-                }
-                transcript_assessment = assessment_labels[verdict]
-                if verdict in {"MUSIC_ONLY", "NO_MEANING"}:
-                    source_label = "标题和简介"
-                    transcript = ""
+            return None
+        try:
+            verdict = await self._classify_transcript(metadata, transcript, source_label)
+        except Exception as exc:
+            self.ctx.logger.warning("字幕/语音内容有效性判断失败，已跳过 AI 总结: %s", exc)
+            return None
+        if verdict in {"MUSIC_ONLY", "NO_MEANING"}:
+            return None
+
+        assessment_labels = {
+            "USEFUL": "有效",
+            "PARTIAL": "部分有效，必须忽略音乐、重复、噪声和识别错误",
+        }
+        transcript_assessment = assessment_labels[verdict]
 
         chunk_size = self.config.summary.transcript_chunk_chars
-        if transcript and len(transcript) > chunk_size:
+        if len(transcript) > chunk_size:
             distilled_chunks: list[str] = []
             chunks = [transcript[index : index + chunk_size] for index in range(0, len(transcript), chunk_size)]
             for index, chunk in enumerate(chunks, start=1):
@@ -471,17 +520,14 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
         else:
             transcript_for_summary = transcript
 
-        source_text = transcript_for_summary or "无额外内容"
         prompt = (
             "你正在为群聊生成 B 站视频总结。请综合标题、作者、发布时间、完整简介以及字幕或语音转写，"
             f"输出不超过 {self.config.summary.max_chars} 个中文字的简体中文纯文本总结。"
             "直接给出内容，不要标题、Markdown、列表符号、表格、代码块、链接、表情或客套话。"
-            "必须独立判断字幕或转写中是否真的存在可支撑总结的有效语音，并复核前置判断。"
+            "前置判断已确认字幕或转写中至少存在部分有效内容，但仍须只采用其中可靠的信息。"
             "纯音乐/BGM、重复歌词或拟声、噪声、口头填充、乱码、明显 ASR 幻觉及与元数据明显冲突的文本"
-            "都不能作为视频事实或观点。若仅部分有效，只总结可靠部分。若没有有效语音，直接根据标题和简介"
-            "写成自然流畅的视频概览，不要说明资料不足、数据来源或技术处理过程，也不要出现“转写质量不足”、"
-            "“无法确认”、“仅能依据”或“未识别到有效语音”等突兀措辞。标题和简介信息有限时，只自然概括"
-            "能够确认的主题，不得补写细节。不要输出 USEFUL 等内部标签、筛选结果或判断过程。"
+            "都不能作为视频事实或观点。若仅部分有效，只总结可靠部分。标题和简介只能辅助理解可靠内容，"
+            "不能代替字幕或转写生成概览。不要输出 USEFUL 等内部标签、筛选结果或判断过程。"
             "语气应像群聊中正常的视频概览，优先说明视频主题、核心观点与结论；不得编造来源中不存在的信息。\n\n"
             f"标题：{metadata.title}\n"
             f"作者：{metadata.uploader}\n"
@@ -489,7 +535,7 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
             f"简介：{metadata.description or '无'}\n"
             f"内部资料来源（禁止在总结中提及）：{source_label}\n"
             f"内部语音筛选结果（禁止在总结中提及）：{transcript_assessment}\n"
-            f"内容：\n{source_text}"
+            f"内容：\n{transcript_for_summary}"
         )
         raw_summary = await self._call_llm(prompt, max_tokens=600)
         summary = _sanitize_summary(raw_summary, self.config.summary.max_chars)
