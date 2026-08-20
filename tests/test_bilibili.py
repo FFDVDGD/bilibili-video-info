@@ -6,6 +6,8 @@ import pytest
 
 from bilibili import (
     BilibiliProcessingError,
+    ToolPaths,
+    YtDlpClient,
     _download_bilibili_resource,
     _normalize_bilibili_resource_url,
     extract_bilibili_url,
@@ -46,10 +48,11 @@ def test_srt_subtitle_strips_timestamps_and_tags() -> None:
     assert parse_subtitle(content, "srt") == "Hello\nWorld"
 
 
-def test_subtitle_priority_is_chinese_manual_then_chinese_auto() -> None:
+def test_other_manual_subtitle_is_preferred_to_chinese_ai_caption() -> None:
     info = {
         "subtitles": {
             "en": [{"url": "https://example/en.vtt", "ext": "vtt"}],
+            "ai-zh": [{"url": "https://example/ai-zh.json", "ext": "json"}],
         },
         "automatic_captions": {
             "zh-CN": [{"url": "https://example/zh.json", "ext": "json"}],
@@ -57,8 +60,53 @@ def test_subtitle_priority_is_chinese_manual_then_chinese_auto() -> None:
     }
     track = select_subtitle_track(info)
     assert track is not None
-    assert track.language == "zh-CN"
-    assert track.automatic is True
+    assert track.language == "en"
+
+
+def test_automatic_captions_are_ignored_for_asr_fallback() -> None:
+    info = {
+        "subtitles": {
+            "ai-zh": [{"url": "https://example/ai-zh.json", "ext": "json"}],
+        },
+        "automatic_captions": {
+            "zh-CN": [{"url": "https://example/zh.json", "ext": "json"}],
+        },
+    }
+
+    assert select_subtitle_track(info) is None
+
+
+async def test_probe_requests_and_reads_inline_manual_subtitle_data(tmp_path: Path) -> None:
+    client = YtDlpClient(ToolPaths(yt_dlp=tmp_path / "yt-dlp", ffmpeg=tmp_path / "ffmpeg"))
+    captured_arguments: list[str] = []
+
+    async def fake_run(arguments: list[str], *, work_dir: Path, timeout_seconds: int) -> str:
+        del work_dir, timeout_seconds
+        captured_arguments.extend(arguments)
+        return json.dumps(
+            {
+                "id": "BV1test",
+                "title": "测试视频",
+                "webpage_url": "https://www.bilibili.com/video/BV1test",
+                "subtitles": {
+                    "zh-CN": [
+                        {
+                            "ext": "srt",
+                            "data": "1\n00:00:01,000 --> 00:00:02,000\n人工字幕\n",
+                        }
+                    ],
+                    "ai-zh": [{"ext": "srt", "data": "AI 字幕"}],
+                },
+            }
+        )
+
+    client._run = fake_run  # type: ignore[method-assign]
+    metadata = await client.probe("https://www.bilibili.com/video/BV1test", tmp_path, None)
+
+    assert "--write-subs" in captured_arguments
+    assert metadata.subtitle_track is not None
+    assert metadata.subtitle_track.language == "zh-CN"
+    assert metadata.subtitle_track.data.endswith("人工字幕\n")
 
 
 def test_format_duration() -> None:

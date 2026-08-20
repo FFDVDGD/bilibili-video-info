@@ -42,12 +42,12 @@ class PlaylistNotSupportedError(BilibiliProcessingError):
 
 @dataclass(frozen=True)
 class SubtitleTrack:
-    """一个可下载的字幕轨道。"""
+    """一个可读取的字幕轨道。"""
 
     language: str
-    url: str
     extension: str
-    automatic: bool
+    url: str
+    data: str
 
 
 @dataclass(frozen=True)
@@ -172,6 +172,7 @@ class YtDlpClient:
         arguments = [
             "--dump-single-json",
             "--skip-download",
+            "--write-subs",
             "--no-playlist",
             "--no-warnings",
             "--no-progress",
@@ -311,15 +312,12 @@ def _format_published_at(info: dict[str, Any]) -> str:
 
 
 def select_subtitle_track(info: dict[str, Any]) -> SubtitleTrack | None:
-    """按中文人工、中文自动、其他人工、其他自动顺序选择字幕。"""
+    """优先选择中文人工字幕；没有人工字幕时交由 ASR 转写。"""
 
-    manual = _collect_tracks(info.get("subtitles"), automatic=False)
-    automatic = _collect_tracks(info.get("automatic_captions"), automatic=True)
+    manual = _collect_tracks(info.get("subtitles"))
     groups = (
         [track for track in manual if _is_chinese_language(track.language)],
-        [track for track in automatic if _is_chinese_language(track.language)],
         [track for track in manual if not _is_chinese_language(track.language)],
-        [track for track in automatic if not _is_chinese_language(track.language)],
     )
     for group in groups:
         if group:
@@ -327,28 +325,28 @@ def select_subtitle_track(info: dict[str, Any]) -> SubtitleTrack | None:
     return None
 
 
-def _collect_tracks(raw_tracks: Any, *, automatic: bool) -> list[SubtitleTrack]:
+def _collect_tracks(raw_tracks: Any) -> list[SubtitleTrack]:
     if not isinstance(raw_tracks, dict):
         return []
 
     tracks: list[SubtitleTrack] = []
     for language, formats in raw_tracks.items():
         language_name = str(language)
-        if "danmaku" in language_name.lower() or not isinstance(formats, list):
+        lowered_language = language_name.lower()
+        if "danmaku" in lowered_language or lowered_language.startswith("ai-") or not isinstance(formats, list):
             continue
         candidates: list[SubtitleTrack] = []
         for item in formats:
             if not isinstance(item, dict):
                 continue
             url = str(item.get("url") or "").strip()
-            if not url:
+            data = str(item.get("data") or "")
+            if not url and not data:
                 continue
             if url.startswith("//"):
                 url = "https:" + url
             extension = str(item.get("ext") or "").lower()
-            candidates.append(
-                SubtitleTrack(language=language_name, url=url, extension=extension, automatic=automatic)
-            )
+            candidates.append(SubtitleTrack(language=language_name, extension=extension, url=url, data=data))
         candidates.sort(key=lambda track: _subtitle_format_priority(track.extension))
         tracks.extend(candidates[:1])
     return tracks
@@ -372,21 +370,25 @@ async def download_subtitle(
 ) -> str:
     """下载并转换字幕为纯文本。"""
 
-    headers = {
-        "Referer": metadata.webpage_url,
-        "User-Agent": "Mozilla/5.0 (MaiBot bilibili-video-info)",
-    }
-    response = await _download_bilibili_resource(
-        client,
-        track.url,
-        headers=headers,
-        cookie_header=cookie_header,
-        timeout_seconds=20,
-    )
-    response.raise_for_status()
-    if len(response.content) > 20 * 1024 * 1024:
+    if track.data:
+        content = track.data.encode("utf-8")
+    else:
+        headers = {
+            "Referer": metadata.webpage_url,
+            "User-Agent": "Mozilla/5.0 (MaiBot bilibili-video-info)",
+        }
+        response = await _download_bilibili_resource(
+            client,
+            track.url,
+            headers=headers,
+            cookie_header=cookie_header,
+            timeout_seconds=20,
+        )
+        response.raise_for_status()
+        content = response.content
+    if len(content) > 20 * 1024 * 1024:
         raise BilibiliProcessingError("字幕文件超过 20MB")
-    return parse_subtitle(response.content, track.extension)
+    return parse_subtitle(content, track.extension)
 
 
 def parse_subtitle(content: bytes, extension: str) -> str:

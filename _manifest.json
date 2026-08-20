@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "name": "Bilibili 视频信息与 AI 总结",
   "description": "拦截群聊中的 B 站视频链接，提取元数据、字幕或语音转写，并生成简洁总结",
   "author": {

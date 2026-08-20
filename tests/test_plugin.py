@@ -137,6 +137,35 @@ async def test_missing_transcript_skips_all_llm_calls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_manual_subtitle_uses_asr(tmp_path: Path) -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    plugin._http_client = object()
+    audio_path = tmp_path / "audio.mp3"
+
+    class FakeYtDlp:
+        async def download_audio(
+            self,
+            metadata: VideoMetadata,
+            work_dir: Path,
+            cookie_file: Path | None,
+        ) -> Path:
+            del metadata, work_dir, cookie_file
+            return audio_path
+
+    async def fake_transcribe(path: Path) -> str:
+        assert path == audio_path
+        return "ASR 转写结果"
+
+    plugin._yt_dlp = FakeYtDlp()
+    plugin._transcribe_audio = fake_transcribe
+
+    transcript, source_label = await plugin._obtain_transcript(_video_metadata(), tmp_path, None)
+
+    assert transcript == "ASR 转写结果"
+    assert source_label == "Fun-ASR语音转写"
+
+
+@pytest.mark.asyncio
 async def test_classifier_failure_skips_final_summary() -> None:
     plugin = BilibiliVideoInfoPlugin()
     plugin.set_plugin_config({})
