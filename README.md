@@ -1,6 +1,6 @@
 # Bilibili 视频信息与 AI 总结
 
-MaiBot SDK 2.x 插件。它会在所有被 MaiBot 适配器策略放行的群聊中识别 Bilibili 视频链接，阻止原有回复链并发送视频元数据；只有取得有效字幕或语音转写时，才发送不超过 300 字的 AI 总结。
+适用于 MaiBot 1.0.x–1.2.x、最低需要 SDK 2.7.1 的 SDK 2.x 插件。它会在所有被 MaiBot 适配器策略放行的群聊中识别 Bilibili 视频链接，阻止原有回复链并发送视频元数据；只有取得有效字幕或语音转写时，才发送不超过 300 字的 AI 总结。
 
 ## 工作流程
 
@@ -83,7 +83,7 @@ Copy-Item config.example.toml config.toml
 - `_manifest.json` 和 `pyproject.toml` 中的版本表示插件代码发行版本。
 - `[plugin].config_version` 表示 `config.toml` 的结构版本，用于配置兼容与迁移。
 
-功能改进、Bug 修复和提示词调整通常只提升插件发行版本。只有新增、删除或重命名配置字段，或者修改字段类型、含义或 TOML 分区时，才提升 `config_version`。因此插件 v0.1.7 继续使用 `config_version = "0.1.0"` 是预期行为，现有配置无需迁移。
+功能改进、Bug 修复和提示词调整通常只提升插件发行版本。只有新增、删除或重命名配置字段，或者修改字段类型、含义或 TOML 分区时，才提升 `config_version`。因此插件 v0.1.8 继续使用 `config_version = "0.1.0"` 是预期行为，现有配置无需迁移。
 
 ### Bilibili Cookie
 
