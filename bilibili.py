@@ -35,6 +35,10 @@ _BILIBILI_RESOURCE_DOMAINS = ("bilibili.com", "hdslb.com", "bilivideo.com", "bil
 class BilibiliProcessingError(RuntimeError):
     """可安全展示给群聊的 Bilibili 处理错误。"""
 
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 
 class PlaylistNotSupportedError(BilibiliProcessingError):
     """链接指向批量列表而不是具体视频。"""
@@ -183,7 +187,17 @@ class YtDlpClient:
             arguments.extend(("--cookies", str(cookie_file)))
         arguments.append(url)
 
-        stdout = await self._run(arguments, work_dir=work_dir, timeout_seconds=self.probe_timeout)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.probe_timeout
+        for attempt in range(3):
+            try:
+                stdout = await self._run(arguments, work_dir=work_dir, timeout_seconds=deadline - loop.time())
+                break
+            except BilibiliProcessingError as exc:
+                delay = attempt + 1
+                if not exc.retryable or attempt == 2 or deadline - loop.time() <= delay:
+                    raise
+                await asyncio.sleep(delay)
         try:
             info = json.loads(stdout)
         except json.JSONDecodeError as exc:
@@ -253,7 +267,7 @@ class YtDlpClient:
             audio_path = candidates[0]
         return audio_path
 
-    async def _run(self, arguments: list[str], *, work_dir: Path, timeout_seconds: int) -> str:
+    async def _run(self, arguments: list[str], *, work_dir: Path, timeout_seconds: float) -> str:
         creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         process = await asyncio.create_subprocess_exec(
             str(self.paths.yt_dlp),
@@ -274,12 +288,14 @@ class YtDlpClient:
             with suppress(ProcessLookupError):
                 process.kill()
             await process.wait()
-            raise BilibiliProcessingError(f"yt-dlp 处理超过 {timeout_seconds} 秒，已终止") from exc
+            raise BilibiliProcessingError(f"yt-dlp 处理超过 {timeout_seconds:g} 秒，已终止") from exc
 
         stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
         if process.returncode != 0:
-            raise BilibiliProcessingError(_safe_yt_dlp_error(stderr))
+            raise BilibiliProcessingError(
+                _safe_yt_dlp_error(stderr), retryable="EOF occurred in violation of protocol" in stderr
+            )
         return stdout
 
 

@@ -83,7 +83,7 @@ Copy-Item config.example.toml config.toml
 - `_manifest.json` 和 `pyproject.toml` 中的版本表示插件代码发行版本。
 - `[plugin].config_version` 表示 `config.toml` 的结构版本，用于配置兼容与迁移。
 
-功能改进、Bug 修复和提示词调整通常只提升插件发行版本。只有新增、删除或重命名配置字段，或者修改字段类型、含义或 TOML 分区时，才提升 `config_version`。因此插件 v0.1.8 继续使用 `config_version = "0.1.0"` 是预期行为，现有配置无需迁移。
+功能改进、Bug 修复和提示词调整通常只提升插件发行版本。只有新增、删除或重命名配置字段，或者修改字段类型、含义或 TOML 分区时，才提升 `config_version`。因此插件 v0.1.9 继续使用 `config_version = "0.1.0"` 是预期行为，现有配置无需迁移。
 
 ### Bilibili Cookie
 
@@ -141,6 +141,7 @@ asr_poll_interval_seconds = 3
 
 ## 失败与降级
 
+- yt-dlp 元数据探测遇到 SSL 协议 EOF 时，会在原有 120 秒总时限内最多尝试三次；其他解析错误立即返回。
 - 字幕读取失败：改用音频与 Fun-ASR。
 - 音频下载、OSS 或 ASR 失败：明确提示，并跳过 AI 总结。
 - Fun-ASR 返回内部服务错误：自动重新提交一次；最终失败日志会包含脱敏后的子任务错误码、Task ID 和 Request ID，方便进一步排查。

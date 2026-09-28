@@ -1,5 +1,7 @@
+import asyncio
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, call
 
 import httpx
 import pytest
@@ -107,6 +109,103 @@ async def test_probe_requests_and_reads_inline_manual_subtitle_data(tmp_path: Pa
     assert metadata.subtitle_track is not None
     assert metadata.subtitle_track.language == "zh-CN"
     assert metadata.subtitle_track.data.endswith("人工字幕\n")
+
+
+async def test_probe_retries_ssl_eof_even_when_error_message_is_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = YtDlpClient(ToolPaths(yt_dlp=tmp_path / "yt-dlp", ffmpeg=tmp_path / "ffmpeg"))
+    error = ("ERROR: [BiliBili] " + "x" * 300 + " EOF occurred in violation of protocol").encode()
+    attempts: list[tuple[str, ...]] = []
+    sleep = AsyncMock()
+
+    class FakeProcess:
+        returncode = 1
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            if len(attempts) == 1:
+                return b"", error
+            self.returncode = 0
+            return json.dumps({"id": "BV1test", "title": "测试视频"}).encode(), b""
+
+    async def fake_spawn(*arguments: str, **kwargs: object) -> FakeProcess:
+        del kwargs
+        attempts.append(arguments)
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    metadata = await client.probe("https://www.bilibili.com/video/BV1test", tmp_path, None)
+
+    assert metadata.video_key == "BV1test:p1"
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+    sleep.assert_awaited_once_with(1)
+
+
+@pytest.mark.parametrize("error", ["ERROR: [BiliBili] Video unavailable", "SSL: CERTIFICATE_VERIFY_FAILED"])
+async def test_probe_does_not_retry_permanent_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    client = YtDlpClient(ToolPaths(yt_dlp=tmp_path / "yt-dlp", ffmpeg=tmp_path / "ffmpeg"))
+    attempts = 0
+    sleep = AsyncMock()
+
+    async def fake_run(arguments: list[str], *, work_dir: Path, timeout_seconds: float) -> str:
+        nonlocal attempts
+        del arguments, work_dir, timeout_seconds
+        attempts += 1
+        raise BilibiliProcessingError(error)
+
+    client._run = fake_run  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with pytest.raises(BilibiliProcessingError) as exc_info:
+        await client.probe("https://www.bilibili.com/video/BV1test", tmp_path, None)
+
+    assert str(exc_info.value) == error
+    assert attempts == 1
+    sleep.assert_not_awaited()
+
+
+async def test_probe_stops_after_three_ssl_eof_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = YtDlpClient(ToolPaths(yt_dlp=tmp_path / "yt-dlp", ffmpeg=tmp_path / "ffmpeg"))
+    attempts = 0
+    sleep = AsyncMock()
+
+    async def fake_run(arguments: list[str], *, work_dir: Path, timeout_seconds: float) -> str:
+        nonlocal attempts
+        del arguments, work_dir
+        assert 0 < timeout_seconds <= 120
+        attempts += 1
+        raise BilibiliProcessingError("SSL EOF", retryable=True)
+
+    client._run = fake_run  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with pytest.raises(BilibiliProcessingError, match="SSL EOF"):
+        await client.probe("https://www.bilibili.com/video/BV1test", tmp_path, None)
+
+    assert attempts == 3
+    assert sleep.await_args_list == [call(1), call(2)]
+
+
+async def test_probe_does_not_retry_beyond_time_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = YtDlpClient(ToolPaths(yt_dlp=tmp_path / "yt-dlp", ffmpeg=tmp_path / "ffmpeg"), probe_timeout=1)
+    attempts = 0
+    sleep = AsyncMock()
+
+    async def fake_run(arguments: list[str], *, work_dir: Path, timeout_seconds: float) -> str:
+        nonlocal attempts
+        del arguments, work_dir, timeout_seconds
+        attempts += 1
+        raise BilibiliProcessingError("SSL EOF", retryable=True)
+
+    client._run = fake_run  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with pytest.raises(BilibiliProcessingError, match="SSL EOF"):
+        await client.probe("https://www.bilibili.com/video/BV1test", tmp_path, None)
+
+    assert attempts == 1
+    sleep.assert_not_awaited()
 
 
 def test_format_duration() -> None:
