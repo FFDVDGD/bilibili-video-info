@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "name": "Bilibili 视频信息与 AI 总结",
   "description": "拦截群聊中的 B 站视频链接，提取元数据、字幕或语音转写，并生成简洁总结",
   "author": {
@@ -12,11 +12,11 @@
     "repository": "https://github.com/FFDVDGD/bilibili-video-info"
   },
   "host_application": {
-    "min_version": "1.0.0",
-    "max_version": "1.2.99"
+    "min_version": "1.4.3",
+    "max_version": "1.4.99"
   },
   "sdk": {
-    "min_version": "2.7.1",
+    "min_version": "2.22.1",
     "max_version": "2.99.99"
   },
   "dependencies": [

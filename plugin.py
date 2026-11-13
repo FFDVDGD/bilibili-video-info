@@ -234,8 +234,8 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
                 if isinstance(data := segment.get("data"), str)
             ).strip()
         additional_config = message_info.get("additional_config")
-        route_metadata = additional_config if isinstance(additional_config, dict) else {}
-        url = extract_bilibili_url(text) or _extract_platform_card_url(route_metadata)
+        card_metadata = additional_config if isinstance(additional_config, dict) else {}
+        url = extract_bilibili_url(text) or _extract_platform_card_url(card_metadata)
         if not group_id or not platform or url is None:
             return None
 
@@ -251,14 +251,8 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
             user_nickname=user_nickname,
             stream_id=str(message.get("session_id") or ""),
             message_id=str(message.get("message_id") or ""),
-            account_id=_first_route_value(
-                route_metadata,
-                ("platform_io_account_id", "account_id", "self_id", "bot_account"),
-            ),
-            scope=_first_route_value(
-                route_metadata,
-                ("platform_io_scope", "route_scope", "adapter_scope", "connection_id"),
-            ),
+            account_id=str(message.get("account_id") or "").strip(),
+            scope=str(message.get("scope") or "").strip(),
         )
 
     async def _process_job(self, job: InboundVideoJob) -> None:
@@ -546,7 +540,7 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
     async def _call_llm(self, prompt: str, *, max_tokens: int) -> str:
         result = await self.ctx.llm.generate(
             prompt=prompt,
-            model=self.config.summary.llm_task_name,
+            task_name=self.config.summary.llm_task_name,
             temperature=0.2,
             max_tokens=max_tokens,
             rpc_timeout_ms=180000,
@@ -567,7 +561,7 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
         if not isinstance(opened, dict) or not opened.get("success"):
             detail = opened.get("error") if isinstance(opened, dict) else "响应格式错误"
             raise RuntimeError(f"无法打开群聊会话：{detail}")
-        stream_id = str(opened.get("stream_id") or opened.get("session_id") or job.stream_id)
+        stream_id = str(opened.get("stream_id") or "")
         if not stream_id:
             raise RuntimeError("打开群聊会话后未取得 stream_id")
 
@@ -643,14 +637,6 @@ class BilibiliVideoInfoPlugin(MaiBotPlugin):
             self._seen.clear()
             return
         self._seen = {key: timestamp for key, timestamp in self._seen.items() if now - timestamp < ttl}
-
-
-def _first_route_value(metadata: dict[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = str(metadata.get(key) or "").strip()
-        if value:
-            return value
-    return ""
 
 
 def _extract_platform_card_url(metadata: dict[str, Any]) -> str | None:

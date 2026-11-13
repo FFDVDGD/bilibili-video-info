@@ -2,6 +2,8 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -17,10 +19,14 @@ def test_manifest_and_project_release_versions_match() -> None:
     assert manifest["version"] == project["project"]["version"]
 
 
-def test_manifest_supports_current_maibot_and_sdk() -> None:
+@pytest.mark.parametrize(
+    ("host_version", "sdk_version", "supported"),
+    [("1.2.3", "2.8.0", False), ("1.4.3", "2.22.1", True)],
+)
+def test_manifest_runtime_compatibility(host_version: str, sdk_version: str, supported: bool) -> None:
     manifest = json.loads((PROJECT_ROOT / "_manifest.json").read_text(encoding="utf-8"))
 
     host = manifest["host_application"]
     sdk = manifest["sdk"]
-    assert _version(host["min_version"]) <= _version("1.2.3") <= _version(host["max_version"])
-    assert _version(sdk["min_version"]) <= _version("2.8.0") <= _version(sdk["max_version"])
+    assert (_version(host["min_version"]) <= _version(host_version) <= _version(host["max_version"])) is supported
+    assert (_version(sdk["min_version"]) <= _version(sdk_version) <= _version(sdk["max_version"])) is supported

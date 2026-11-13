@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
@@ -341,11 +342,11 @@ def test_build_job_accepts_any_group_and_preserves_message_id() -> None:
             "platform": "qq",
             "session_id": "stream-1",
             "message_id": "message-1",
+            "account_id": "bot-1",
             "processed_plain_text": "看看 https://b23.tv/AbCdEf",
             "message_info": {
                 "group_info": {"group_id": "123"},
                 "user_info": {"user_nickname": "测试用户"},
-                "additional_config": {"account_id": "bot-1"},
             },
         }
     )
@@ -354,6 +355,66 @@ def test_build_job_accepts_any_group_and_preserves_message_id() -> None:
     assert job.group_id == "123"
     assert job.message_id == "message-1"
     assert job.account_id == "bot-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "expected_account", "expected_scope"),
+    [
+        ({"account_id": " bot-new ", "scope": " gateway-new "}, "bot-new", "gateway-new"),
+        ({"account_id": "bot-new"}, "bot-new", ""),
+        ({"account_id": "", "scope": ""}, "", ""),
+        ({"account_id": None, "scope": None}, "", ""),
+        ({}, "", ""),
+    ],
+)
+async def test_interceptor_opens_session_with_inbound_route(
+    route: dict[str, str | None], expected_account: str, expected_scope: str
+) -> None:
+    plugin = BilibiliVideoInfoPlugin()
+    plugin.set_plugin_config({})
+    opened_routes: list[dict[str, str]] = []
+
+    async def open_session(**kwargs: str) -> dict[str, object]:
+        opened_routes.append(kwargs)
+        return {"success": True, "stream_id": "stream-new"}
+
+    async def append_context(**kwargs: object) -> dict[str, bool]:
+        return {"success": True}
+
+    async def process_job(job: InboundVideoJob) -> None:
+        assert await plugin._prepare_stream_and_context(job) == "stream-new"
+
+    plugin._process_job = process_job
+    plugin._set_context(
+        SimpleNamespace(
+            chat=SimpleNamespace(open_session=open_session),
+            maisaka=SimpleNamespace(context=SimpleNamespace(append=append_context)),
+        )
+    )
+    result = await plugin.intercept_bilibili_link(
+        message={
+            "platform": "qq",
+            "processed_plain_text": "https://b23.tv/AbCdEf",
+            "message_info": {
+                "group_info": {"group_id": "123"},
+                "additional_config": {"account_id": "bot-old", "platform_io_scope": "gateway-old"},
+            },
+            **route,
+        }
+    )
+    await asyncio.gather(*plugin._tasks)
+
+    assert result == {"action": "abort"}
+    assert opened_routes == [
+        {
+            "platform": "qq",
+            "chat_type": "group",
+            "group_id": "123",
+            "account_id": expected_account,
+            "scope": expected_scope,
+        }
+    ]
 
 
 def test_build_job_ignores_url_from_quoted_message() -> None:
